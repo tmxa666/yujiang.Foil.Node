@@ -1,0 +1,195 @@
+var yjDB = {
+	stringify : function(meta, rows) {
+		return JSON.stringify({
+			meta : meta,
+			rows : rows
+		});
+	},
+
+	// <smmary>把dataset(meta+rows)转换为object阵列,便于数据绑定</summary>
+	// <example>
+	// meta:[{"name":"Name"},{"name":"OID"}]
+	// rows:[["A",1],["B",2]]
+	// return:[{"Name":"A","OID":1},{"Name":"B","OID":2}]
+	// </example>
+	dataSet2ObjectList : function(meta, rows) {
+		var a = new Array(rows.length);
+		for ( var i = 0; i < rows.length; i++) {
+			var r = {};
+			for ( var j = 0; j < meta.length; j++) {
+				r[meta[j].name] = rows[i][j];
+			}
+			a[i] = r;
+		}
+		return a;
+	},
+
+	// <summary>去掉objectList中的meta,按meta的顺序排列</summary>
+	objectList2List : function(meta, objectList) {
+		var list = new Array(objectList.length);
+		for ( var i = 0; i < objectList.length; i++) {
+			var obj = objectList[i];
+			var row = new Array(meta.length);
+			for ( var j = 0; j < meta.length; j++) {
+				row[j] = obj[meta[j].name];  //20150303MovingSpy PoolingServer 为啥会在这一句出现错误啊？？？？？？ 
+			}
+			list[i] = row;
+		}
+		return list;
+	},
+	objectList2DataSet : function(objectList) {
+		var result={
+			meta:[],
+			rows:[]
+		}
+		if (objectList.length>0){
+			for (var field in objectList[0]){
+				result.meta.push({name:field});
+			}
+			result.rows=yjDB.objectList2List(result.meta, objectList);
+		}
+		
+		return result;
+	},
+	// <smmary>把dataset(meta+rows)转换为object阵列,然后序列化为json字串</summary>
+	stringifyAsObjectList : function(meta, rows) {
+		var ol = this.dataSet2ObjectList(meta, rows);
+		return JSON.stringify(ol);
+	},
+
+	// <summary>把dataset的json字串解析为object阵列</summary>
+	// <example>
+	// s:{"meta":[{"name":"Name"},{"name":"OID"}],"rows":[["A",1],["B",2]]}
+	// return:[{"Name":"A","OID":1},{"Name":"B","OID":2}]
+	// </example>
+	parseAsObjectList : function(s) {
+		var ds = JSON.parse(s);
+		return this.dataSet2ObjectList(ds.meta, ds.rows);
+	},
+
+	dataSet2TreeObjectList : function(meta, rows, oidColumnIndex,parentOIDColumnIndex) {
+		var oidColumnName = meta[oidColumnIndex].name;
+		var oidParentColumnName = meta[parentOIDColumnIndex].name;
+
+		var vList = yjDB.dataSet2ObjectList(meta, rows);
+		var tree = {};
+		for ( var i = 0; i < vList.length; i++) {
+			var node = {
+				data : vList[i],
+				isRoot : true,
+				sortIndex:i,
+				children : []
+			}
+			tree[vList[i][oidColumnName]] = node;
+		}
+
+		for ( var oid in tree) {
+			var node = tree[oid];
+			var oidParent = node.data[oidParentColumnName];
+			var parent = tree[oidParent];
+			if (parent && parent != node) {
+				parent.children.push(node);
+				node.isRoot = false;
+			}
+		}
+
+		var result = [];
+		for ( var oid in tree) {
+			var node = tree[oid];
+			if (node.isRoot)
+				result.push(node);
+			delete node.isRoot;
+		}
+		
+		result.sort(function(a,b){
+			if (a.sortIndex<b.sortIndex) return -1;
+			else if (a.sortIndex==b.sortIndex) return 0;
+			else return 1;
+		});
+		
+		for(var i=0;i<result.length;i++){
+			delete result[i].sortIndex;
+		}
+		return result;
+	},
+	
+	dataSet2Horizontal:function(meta,rows,options){
+		//options包含如下几个属性：keyFieldIndex,columnFieldsIndex,valueFieldsIndex,isToPlain,propSplitChar
+		//假设：{meta: [{"name":"F1"},{"name":"F2"},{“name”:”F3”},{“name”:”F4”}],
+		//     rows: [["a1",”b1”,“c1”,”v1”],["a1",”b1”,”c2”,”v2”]]}
+		if (options==null||options.columnFieldsIndex==null||options.columnFieldsIndex.length==0){
+			throw new Error('options.columnFieldsIndex must be a array and has at least one element.');
+		}
+		var result={};
+		if (meta.length<=0){
+			return [];
+		}
+		
+		options.keyFieldIndex=options.keyFieldIndex||0;
+		options.valueFieldsIndex=options.valueFieldsIndex||[meta.length-1];
+		
+		//先得到哪些没有指定，可以直接复制的字段
+		var otherColumns=[];
+		for(var col=0;col<meta.length;col++){
+			if (options.columnFieldsIndex.indexOf(col)<0 && 
+				col!=options.keyFieldIndex && 
+				options.valueFieldsIndex.indexOf(col)<0){
+				otherColumns.push({index:col,name:meta[col].name});
+			}
+		}
+		
+		for (var row=0;row<rows.length;row++){				
+			var key=rows[row][options.keyFieldIndex];
+			var obj=result[key];
+			if (!obj){
+				obj={};
+				result[key]=obj;
+			}
+			//直接复制未指定的字段
+			for(var col=0;col<otherColumns.length;col++){				
+				obj[otherColumns[col].name]=rows[row][otherColumns[col].index];				
+			}
+			//把columnFieldsIndex指定的字段值横置
+			for(var col=0;col<options.columnFieldsIndex.length;col++){
+				var key=rows[row][options.columnFieldsIndex[col]];
+				var obj2=obj[key];
+				if (!obj2){
+					if(col==options.columnFieldsIndex.length-1){
+						obj2=[];
+						for(var i=0;i<options.valueFieldsIndex.length;i++){
+							obj2.push(rows[row][options.valueFieldsIndex[i]]);
+						}
+					}
+					else{
+						obj2={};							
+					}
+					obj[key]=obj2;
+				}
+				else{
+					//value需要覆盖还是用数组增加?抛弃
+				}
+				obj=obj2;
+			}
+		}
+		//先得到{a1:{b1:{c1:['v1'],c2:['v2']}}}
+		var yjUtils=require("./yjUtils.js");
+		var result2=[];
+		for(var key in result){
+			var obj=result[key];
+			if (options.isToPlain==true){
+				obj=yjUtils.object2Plain(obj,options.propSplitChar);
+			}
+			obj[meta[options.keyFieldIndex].name]=key;
+			result2.push(obj);
+		}
+		//得到[{"F1":"a1","b1":{"c1":["v1"],"c2":["v2"]}}]
+		return result2;
+	}
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+	// 如果用module.exports = yjDB;
+	// qunit的机制,需要用code:{path:"./source/yjDB.js",namespace:"yjDB"}
+	// 如果用exports。yjDB；qunit直接用
+	module.exports = yjDB;
+}
